@@ -1,0 +1,129 @@
+name: PIH Release Automation
+
+on:
+  workflow_call:
+    inputs:
+      FORCE_MERGE_MAIN:
+        required: true
+        type: string
+    secrets:
+      PAT:
+         required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  Create-Release-PRs:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PAT }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Branch & Version
+        id: version
+        run: |
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+          VERSION="${BRANCH_NAME#release/}"
+          
+          echo "Branch Name - $BRANCH_NAME"
+          echo "Version - $VERSION"
+      
+          echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR to main
+        run: |
+          gh pr create \
+            --head "${{ steps.version.outputs.branch }}" \
+            --base main \
+            --title "Release ${{ steps.version.outputs.version }} → main" \
+            --body "Sync release changes into main." || echo "PR Already Exists For Main"
+
+      - name: Create PR to develop
+        run: |
+          gh pr create \
+            --head "${{ steps.version.outputs.branch }}" \
+            --base develop \
+            --title "Release ${{ steps.version.outputs.version }} → develop" \
+            --body "Sync release changes into develop." || echo "PR Already Exists For Develop"
+
+      - name: Automerge PR to main
+        env:
+          FORCE_MERGE_MAIN: ${{ inputs.FORCE_MERGE_MAIN }}
+        run: |
+          set -e
+          echo "Force merge flag value: $FORCE_MERGE_MAIN"
+
+          PR_NUMBER=$(gh pr list \
+            --head "${{ steps.version.outputs.branch }}" \
+            --base main \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR found for main. Exiting."
+            exit 0
+          fi
+
+          echo "Attempting normal squash merge for PR #$PR_NUMBER"
+          if gh pr merge "$PR_NUMBER" --merge; then
+            echo "PR merged successfully with normal flow."
+            exit 0
+          fi
+
+          echo "Normal merge failed (conflicts detected)."
+
+          if [[ "${FORCE_MERGE_MAIN^^}" != "TRUE" ]]; then
+            echo "FORCE_MERGE_MAIN is FALSE — failing pipeline."
+            exit 1
+          fi
+
+          echo "FORCE_MERGE_MAIN is TRUE — auto-resolving conflicts and force-merging."
+
+          RELEASE_BRANCH="${{ steps.version.outputs.branch }}"
+
+          git config user.name "Ankit"
+          git config user.email "ankit@gmail.com"
+
+          git fetch origin main "$RELEASE_BRANCH"
+
+          git checkout main
+          git reset --hard origin/main
+
+          echo "Merging $RELEASE_BRANCH into main (release branch wins)"
+          if git merge "origin/$RELEASE_BRANCH" -X theirs --no-edit; then
+            echo "Merge completed cleanly."
+          else
+            echo "Conflicts detected — resolving automatically (theirs)."
+            git checkout --theirs .
+            git add .
+            git commit -m "Auto-resolve conflicts merging $RELEASE_BRANCH into main"
+          fi
+
+          git push origin main
+          echo "PR merged in main"
+
+      - name: Create tag on merged main
+        id: tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v$VERSION"      
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="v${{ steps.tag.outputs.version }}"
+
+          gh release create "$TAG" \
+            --title "Release $VERSION" \
+            --generate-notes  

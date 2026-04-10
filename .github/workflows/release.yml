@@ -1,0 +1,76 @@
+name: PIH Release Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: Select Environment
+        options:
+          - QA
+          - Prod
+          - FULL_PIPE_LINE
+
+  push:
+    branches:
+      - "release/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  Test-Analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run dummy tests
+        run: |
+          echo "Running unit tests..."
+          echo "All tests passed"
+
+  ReadVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.read-version.outputs.version_tag }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+  
+      - name: Read Version
+        id: read-version
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/}"
+          echo "Derived version: $VERSION"
+          echo "version_tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+  QA:
+    runs-on: ubuntu-latest
+    needs: [Test-Analyze, ReadVersion]
+    steps:
+      - name: Simulate QA deployment
+        run: |
+          echo "Deploying version ${{ needs.ReadVersion.outputs.version_tag }} to QA..."
+          sleep 3
+          echo "QA deployment completed successfully"
+
+  Prod:
+    runs-on: ubuntu-latest
+    needs: [ReadVersion, QA]
+    steps:
+      - name: Simulate Prod deployment
+        run: |
+          echo "Deploying version ${{ needs.ReadVersion.outputs.version_tag }} to PROD..."
+          sleep 3
+          echo "PROD deployment completed successfully"
+
+  Automate-Release:
+    needs: [ReadVersion, Prod]
+    if: success()
+    uses: ./.github/workflows/automate_release.yml
+    with:
+      FORCE_MERGE_MAIN: ${{ vars.FORCE_MERGE_MAIN }}
+    secrets:
+      PAT: ${{ secrets.PAT }}
