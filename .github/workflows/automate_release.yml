@@ -55,6 +55,7 @@ jobs:
             --body "Sync release changes into develop." || echo "PR Already Exists For Develop"
 
       - name: Automerge PR to main
+        id: automerge
         env:
           FORCE_MERGE_MAIN: ${{ inputs.FORCE_MERGE_MAIN }}
         run: |
@@ -75,14 +76,17 @@ jobs:
           echo "Attempting normal merge for PR #$PR_NUMBER"
           if gh pr merge "$PR_NUMBER" --merge; then
             echo "PR merged successfully with normal flow."
+            echo "merge_status=normal" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "Normal merge failed (likely conflicts)."
 
           if [[ "${FORCE_MERGE_MAIN^^}" != "TRUE" ]]; then
-            echo "FORCE_MERGE_MAIN is FALSE — failing pipeline."
-            exit 1
+            echo "FORCE_MERGE_MAIN is FALSE — skipping force merge."
+            echo "merge_status=skipped" >> "$GITHUB_OUTPUT"
+            echo "force_merge_skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "FORCE_MERGE_MAIN is TRUE — resolving conflicts with release priority."
@@ -111,7 +115,6 @@ jobs:
             git diff --name-only --diff-filter=U | while IFS= read -r file; do
               echo "Resolving $file → release branch priority"
 
-              # If file exists in release branch → take it
               if git cat-file -e "origin/$RELEASE_BRANCH:$file" 2>/dev/null; then
                 echo "$file exists in release → taking release version"
                 git checkout --theirs -- "$file"
@@ -130,8 +133,10 @@ jobs:
           git push origin main
 
           echo "Main branch updated successfully with release priority."
+          echo "merge_status=forced" >> "$GITHUB_OUTPUT"
 
       - name: Create tag on merged main
+        if: steps.automerge.outputs.force_merge_skipped != 'true'
         id: tag
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -141,10 +146,11 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: steps.automerge.outputs.force_merge_skipped != 'true'
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           VERSION="v${{ steps.tag.outputs.version }}"
 
           gh release create "$TAG" \
             --title "Release $VERSION" \
-            --generate-notes  
+            --generate-notes
