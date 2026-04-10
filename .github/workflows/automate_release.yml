@@ -57,58 +57,78 @@ jobs:
       - name: Automerge PR to main
         env:
           FORCE_MERGE_MAIN: ${{ inputs.FORCE_MERGE_MAIN }}
-        run: |
-          set -e
-          echo "Force merge flag value: $FORCE_MERGE_MAIN"
-
-          PR_NUMBER=$(gh pr list \
-            --head "${{ steps.version.outputs.branch }}" \
-            --base main \
-            --json number \
-            --jq '.[0].number')
-
-          if [ -z "$PR_NUMBER" ]; then
-            echo "No PR found for main. Exiting."
-            exit 0
-          fi
-
-          echo "Attempting normal squash merge for PR #$PR_NUMBER"
-          if gh pr merge "$PR_NUMBER" --merge; then
-            echo "PR merged successfully with normal flow."
-            exit 0
-          fi
-
-          echo "Normal merge failed (conflicts detected)."
-
-          if [[ "${FORCE_MERGE_MAIN^^}" != "TRUE" ]]; then
-            echo "FORCE_MERGE_MAIN is FALSE — failing pipeline."
-            exit 1
-          fi
-
-          echo "FORCE_MERGE_MAIN is TRUE — auto-resolving conflicts and force-merging."
-
-          RELEASE_BRANCH="${{ steps.version.outputs.branch }}"
-
-          git config user.name "Ankit"
-          git config user.email "ankit@gmail.com"
-
-          git fetch origin main "$RELEASE_BRANCH"
-
-          git checkout main
-          git reset --hard origin/main
-
-          echo "Merging $RELEASE_BRANCH into main (release branch wins)"
-          if git merge "origin/$RELEASE_BRANCH" -X theirs --no-edit; then
-            echo "Merge completed cleanly."
-          else
-            echo "Conflicts detected — resolving automatically (theirs)."
-            git checkout --theirs .
-            git add .
-            git commit -m "Auto-resolve conflicts merging $RELEASE_BRANCH into main"
-          fi
-
-          git push origin main
-          echo "PR merged in main"
+          run: |
+            set -e
+            echo "Force merge flag value: $FORCE_MERGE_MAIN"
+        
+            PR_NUMBER=$(gh pr list \
+              --head "${{ steps.version.outputs.branch }}" \
+              --base main \
+              --json number \
+              --jq '.[0].number')
+        
+            if [ -z "$PR_NUMBER" ]; then
+              echo "No PR found for main. Exiting."
+              exit 0
+            fi
+        
+            echo "Attempting normal merge for PR #$PR_NUMBER"
+            if gh pr merge "$PR_NUMBER" --merge; then
+              echo "PR merged successfully with normal flow."
+              exit 0
+            fi
+        
+            echo "Normal merge failed (likely conflicts)."
+        
+            if [[ "${FORCE_MERGE_MAIN^^}" != "TRUE" ]]; then
+              echo "FORCE_MERGE_MAIN is FALSE — failing pipeline."
+              exit 1
+            fi
+        
+            echo "FORCE_MERGE_MAIN is TRUE — resolving conflicts with release priority."
+        
+            RELEASE_BRANCH="${{ steps.version.outputs.branch }}"
+        
+            git config user.name "Ankit"
+            git config user.email "ankit@gmail.com"
+        
+            git fetch origin main "$RELEASE_BRANCH"
+        
+            git checkout main
+            git reset --hard origin/main
+        
+            echo "Step 1: Merge with 'theirs' strategy (content-level conflicts)"
+            git merge "origin/$RELEASE_BRANCH" -X theirs --no-edit || true
+        
+            echo "Step 2: Resolving remaining conflicts (modify/delete etc.)"
+        
+            CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
+        
+            if [ -n "$CONFLICT_FILES" ]; then
+              echo "Conflicts detected in:"
+              echo "$CONFLICT_FILES"
+        
+              for file in $CONFLICT_FILES; do
+                echo "Resolving $file → taking RELEASE version"
+        
+                # Try to take release version
+                git checkout --theirs -- "$file" 2>/dev/null || true
+        
+                # If file was deleted in release, ensure it's removed
+                if [ ! -f "$file" ]; then
+                  git rm -f "$file" 2>/dev/null || true
+                fi
+              done
+        
+              git add -A
+              git commit -m "Auto-resolve conflicts: release branch wins"
+            else
+              echo "No remaining conflicts."
+            fi
+        
+            git push origin main
+        
+            echo "Main branch updated successfully with release priority."
 
       - name: Create tag on merged main
         id: tag
