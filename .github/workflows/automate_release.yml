@@ -54,6 +54,23 @@ jobs:
             --title "Release ${{ steps.version.outputs.version }} → develop" \
             --body "Sync release changes into develop." || echo "PR Already Exists For Develop"
 
+      - name: Create backup tag for main
+        if: inputs.FORCE_MERGE_MAIN == 'true'
+        id: backup
+        run: |
+          set -e   
+          VERSION="${{ steps.version.outputs.version }}"
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+      
+          TAG="backup-main-v${VERSION}-${TIMESTAMP}"     
+          echo "Creating backup tag: $TAG"
+      
+          git fetch origin main
+          git tag "$TAG" origin/main
+          git push origin "$TAG"
+      
+          echo "backup_tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Automerge PR to main
         id: automerge
         env:
@@ -76,7 +93,6 @@ jobs:
           echo "Attempting normal merge for PR #$PR_NUMBER"
           if gh pr merge "$PR_NUMBER" --merge; then
             echo "PR merged successfully with normal flow."
-            echo "merge_status=normal" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -84,7 +100,6 @@ jobs:
 
           if [[ "${FORCE_MERGE_MAIN^^}" != "TRUE" ]]; then
             echo "FORCE_MERGE_MAIN is FALSE — skipping force merge."
-            echo "merge_status=skipped" >> "$GITHUB_OUTPUT"
             echo "force_merge_skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
